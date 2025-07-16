@@ -1,6 +1,10 @@
-import React, { useState, useEffect } from 'react';
-import { supabase } from '../firebase/config';
-import { X, Upload, Edit, Trash2, Save, Ambulance as Cancel, Image, Video, ExternalLink, AlertCircle, Check } from 'lucide-react';
+import React, { useState, useRef, useEffect } from 'react';
+import { X, Upload, Save, Trash2, Plus, Eye, EyeOff, AlertCircle, CheckCircle, XCircle, Link, FileImage, Video } from 'lucide-react';
+import { supabase, appId } from '../firebase/config';
+
+interface AdminMediaManagerProps {
+  onClose: () => void;
+}
 
 interface MediaItem {
   id: string;
@@ -9,750 +13,1395 @@ interface MediaItem {
   type: string;
   created_at: string;
   title?: string;
+  category?: string;
   description?: string;
-  type_detail?: string; // NEW: Type classification for images
+  youtubeUrl?: string;
+  date?: string;
   mediatype: 'artwork' | 'video';
   isexternallink?: boolean;
   storagepath?: string;
+  type_detail?: string; // NEW: Type classification for images
   video_thumbnail_url?: string; // NEW: Custom video thumbnail
   video_thumbnail_path?: string; // NEW: Storage path for thumbnail
 }
 
-interface AdminMediaManagerProps {
-  onClose: () => void;
+interface ConfirmDialogProps {
+  isOpen: boolean;
+  title: string;
+  message: string;
+  onConfirm: () => void;
+  onCancel: () => void;
 }
 
+interface UploadState {
+  isUploading: boolean;
+  progress: number;
+  status: 'idle' | 'uploading' | 'success' | 'error';
+  message: string;
+}
+
+// Comprehensive file type validation with browser-compatible formats
+const ALLOWED_IMAGE_TYPES = [
+  'image/jpeg',
+  'image/jpg', 
+  'image/png',
+  'image/gif',
+  'image/webp',
+  'image/svg+xml',
+  'image/bmp',
+  'image/tiff'
+];
+
+// Restrict to browser-compatible video formats only
+const ALLOWED_VIDEO_TYPES = [
+  'video/mp4',        // H.264/H.265 in MP4 container (most compatible)
+  'video/webm',       // VP8/VP9 in WebM container (good browser support)
+  'video/ogg'         // Theora in OGG container (open standard)
+];
+
+const ALL_ALLOWED_TYPES = [...ALLOWED_IMAGE_TYPES, ...ALLOWED_VIDEO_TYPES];
+
+// File size limits (in bytes)
+const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB for images
+const MAX_VIDEO_SIZE = 100 * 1024 * 1024; // 100MB for videos
+const MAX_THUMBNAIL_SIZE = 5 * 1024 * 1024; // 5MB for thumbnails
+
+// Custom confirmation dialog component
+const ConfirmDialog: React.FC<ConfirmDialogProps> = ({ 
+  isOpen, 
+  title, 
+  message, 
+  onConfirm, 
+  onCancel 
+}) => {
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-[150] p-4">
+      <div className="bg-gray-800 rounded-2xl p-6 max-w-md mx-4 animate-in fade-in zoom-in duration-300">
+        <div className="flex items-center gap-3 mb-4">
+          <AlertCircle className="text-red-400" size={24} />
+          <h3 className="text-white text-lg font-semibold">{title}</h3>
+        </div>
+        <p className="text-gray-300 mb-6">{message}</p>
+        <div className="flex gap-3 justify-end">
+          <button
+            onClick={onCancel}
+            className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors duration-200"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors duration-200"
+          >
+            Delete
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// Upload progress component
+const UploadProgress: React.FC<{ uploadState: UploadState }> = ({ uploadState }) => {
+  if (uploadState.status === 'idle') return null;
+
+  const getStatusIcon = () => {
+    switch (uploadState.status) {
+      case 'uploading':
+        return <div className="w-5 h-5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />;
+      case 'success':
+        return <CheckCircle className="w-5 h-5 text-green-400" />;
+      case 'error':
+        return <XCircle className="w-5 h-5 text-red-400" />;
+      default:
+        return null;
+    }
+  };
+
+  const getStatusColor = () => {
+    switch (uploadState.status) {
+      case 'uploading':
+        return 'border-blue-600 bg-blue-600 bg-opacity-20';
+      case 'success':
+        return 'border-green-600 bg-green-600 bg-opacity-20';
+      case 'error':
+        return 'border-red-600 bg-red-600 bg-opacity-20';
+      default:
+        return 'border-gray-600 bg-gray-600 bg-opacity-20';
+    }
+  };
+
+  return (
+    <div className={`border rounded-lg p-4 mb-4 ${getStatusColor()}`}>
+      <div className="flex items-center gap-3 mb-2">
+        {getStatusIcon()}
+        <span className="text-white font-medium">
+          {uploadState.status === 'uploading' && 'Uploading...'}
+          {uploadState.status === 'success' && 'Upload Complete!'}
+          {uploadState.status === 'error' && 'Upload Failed'}
+        </span>
+      </div>
+      
+      {uploadState.status === 'uploading' && (
+        <div className="space-y-2">
+          <div className="w-full bg-gray-700 rounded-full h-2">
+            <div 
+              className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+              style={{ width: `${uploadState.progress}%` }}
+            />
+          </div>
+          <p className="text-sm text-gray-300">{uploadState.progress.toFixed(1)}% complete</p>
+        </div>
+      )}
+      
+      {uploadState.message && (
+        <p className="text-sm text-gray-300 mt-2">{uploadState.message}</p>
+      )}
+    </div>
+  );
+};
+
 const AdminMediaManager: React.FC<AdminMediaManagerProps> = ({ onClose }) => {
+  // Authentication state
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+
+  // Media management state
   const [mediaItems, setMediaItems] = useState<MediaItem[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [uploading, setUploading] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState<Partial<MediaItem>>({});
-  
-  // NEW: Active tab state for separating media types
-  const [activeTab, setActiveTab] = useState<'images' | 'videos'>('images');
-  
-  // Upload form state
-  const [uploadForm, setUploadForm] = useState({
-    file: null as File | null,
-    thumbnailFile: null as File | null, // NEW: For video thumbnails
-    title: '',
-    description: '',
-    type_detail: '', // NEW: For image type classification
-    mediatype: 'artwork' as 'artwork' | 'video',
-    isExternalLink: false,
-    externalUrl: ''
+  const [activeTab, setActiveTab] = useState<'artwork' | 'video'>('artwork');
+  const [editingItem, setEditingItem] = useState<MediaItem | null>(null);
+  const [isDeleting, setIsDeleting] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  // Upload method selection
+  const [uploadMethod, setUploadMethod] = useState<'file' | 'link'>('file');
+
+  // Enhanced upload state
+  const [uploadState, setUploadState] = useState<UploadState>({
+    isUploading: false,
+    progress: 0,
+    status: 'idle',
+    message: ''
   });
 
-  const [notification, setNotification] = useState<{
-    type: 'success' | 'error';
+  // Confirmation dialog state
+  const [confirmDialog, setConfirmDialog] = useState<{
+    isOpen: boolean;
+    title: string;
     message: string;
-  } | null>(null);
+    onConfirm: () => void;
+  }>({
+    isOpen: false,
+    title: '',
+    message: '',
+    onConfirm: () => {}
+  });
 
-  // CRITICAL: Fetch all media items from Supabase - NO LIMIT
+  // Form state for new media
+  const [newMedia, setNewMedia] = useState({
+    title: '',
+    description: '',
+    type_detail: '', // NEW: Type classification for images
+    externalUrl: '',
+    linkType: 'image' as 'image' | 'video',
+    file: null as File | null,
+    thumbnailFile: null as File | null // NEW: Thumbnail file for videos
+  });
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const thumbnailInputRef = useRef<HTMLInputElement>(null); // NEW: Thumbnail input ref
+
+  // Check authentication status on component mount
   useEffect(() => {
-    fetchMediaItems();
+    const checkSession = async () => {
+      try {
+        const { data: { session }, error } = await supabase.auth.getSession();
+        if (error) {
+          console.error('Error checking session:', error);
+          setIsAuthenticated(false);
+          return;
+        }
+        
+        if (session) {
+          setIsAuthenticated(true);
+          console.log('User is authenticated:', session.user.email);
+        } else {
+          setIsAuthenticated(false);
+        }
+      } catch (error) {
+        console.error('Error checking session:', error);
+        setIsAuthenticated(false);
+      }
+    };
+
+    checkSession();
+
+    // Listen for auth state changes
+    const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
+      console.log('Auth state changed:', event, session?.user?.email);
+      setIsAuthenticated(!!session);
+      
+      if (event === 'SIGNED_OUT') {
+        setMediaItems([]);
+      }
+    });
+
+    return () => {
+      authListener?.subscription?.unsubscribe();
+    };
   }, []);
 
-  const fetchMediaItems = async () => {
-    try {
-      console.log('Fetching all media items from Supabase...');
-      
-      // CRITICAL: Remove any limit() calls to fetch ALL items
-      const { data, error } = await supabase
-        .from('website_media')
-        .select('*')
-        .order('created_at', { ascending: false });
+  // Real-time listener for media items
+  useEffect(() => {
+    if (!isAuthenticated) return;
 
-      if (error) {
-        console.error('Error fetching media items:', error);
-        showNotification('error', 'Failed to load media items');
-        return;
-      }
+    const fetchMediaItems = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('website_media')
+          .select('*')
+          .order('created_at', { ascending: false });
 
-      console.log(`Successfully fetched ${data?.length || 0} media items:`, data);
-      setMediaItems(data || []);
-      setLoading(false);
-    } catch (error) {
-      console.error('Error fetching media items:', error);
-      showNotification('error', 'Failed to load media items');
-      setLoading(false);
-    }
-  };
-
-  const showNotification = (type: 'success' | 'error', message: string) => {
-    setNotification({ type, message });
-    setTimeout(() => setNotification(null), 5000);
-  };
-
-  // CRITICAL: Fixed update functionality with proper field handling
-  const handleUpdate = async (id: string) => {
-    try {
-      console.log('Updating media item:', id, 'with data:', editForm);
-      
-      // CRITICAL: Ensure we only update fields that exist in the database schema
-      const updateData: any = {};
-      
-      // Only include fields that have been modified and exist in schema
-      if (editForm.title !== undefined) updateData.title = editForm.title;
-      if (editForm.description !== undefined) updateData.description = editForm.description;
-      if (editForm.type_detail !== undefined) updateData.type_detail = editForm.type_detail;
-      if (editForm.name !== undefined) updateData.name = editForm.name;
-
-      console.log('Final update data:', updateData);
-
-      const { error } = await supabase
-        .from('website_media')
-        .update(updateData)
-        .eq('id', id);
-
-      if (error) {
-        console.error('Error updating media item:', error);
-        showNotification('error', `Failed to update: ${error.message}`);
-        return;
-      }
-
-      console.log('Successfully updated media item:', id);
-      showNotification('success', 'Media item updated successfully');
-      
-      // Refresh the media items list
-      await fetchMediaItems();
-      
-      // Clear editing state
-      setEditingId(null);
-      setEditForm({});
-    } catch (error) {
-      console.error('Error updating media item:', error);
-      showNotification('error', 'Failed to update media item');
-    }
-  };
-
-  const handleDelete = async (id: string, storagePath?: string) => {
-    try {
-      // Delete from storage if it's an uploaded file
-      if (storagePath) {
-        const { error: storageError } = await supabase.storage
-          .from('media')
-          .remove([storagePath]);
-        
-        if (storageError) {
-          console.error('Error deleting from storage:', storageError);
+        if (error) {
+          console.error('Error fetching media items:', error);
+          setError('Failed to load media items');
+          return;
         }
+
+        setMediaItems(data || []);
+      } catch (error) {
+        console.error('Error fetching media items:', error);
+        setError('Failed to load media items');
       }
+    };
 
-      // Delete from database
-      const { error } = await supabase
-        .from('website_media')
-        .delete()
-        .eq('id', id);
+    fetchMediaItems();
 
-      if (error) {
-        console.error('Error deleting media item:', error);
-        showNotification('error', 'Failed to delete media item');
-        return;
-      }
+    // Set up real-time subscription
+    const subscription = supabase
+      .channel('website_media_changes')
+      .on('postgres_changes', 
+        { event: '*', schema: 'public', table: 'website_media' },
+        (payload) => {
+          console.log('Real-time update:', payload);
+          fetchMediaItems(); // Refresh the data
+        }
+      )
+      .subscribe();
 
-      showNotification('success', 'Media item deleted successfully');
-      fetchMediaItems();
-    } catch (error) {
-      console.error('Error deleting media item:', error);
-      showNotification('error', 'Failed to delete media item');
-    }
-  };
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, [isAuthenticated]);
 
-  // CRITICAL: Enhanced upload function with video thumbnail support
-  const handleUpload = async () => {
-    if (uploadForm.isExternalLink) {
-      await handleExternalLinkUpload();
-    } else {
-      await handleFileUpload();
-    }
-  };
-
-  const handleFileUpload = async () => {
-    if (!uploadForm.file) {
-      showNotification('error', 'Please select a file to upload');
+  // Authentication handler with Supabase
+  const handleLogin = async () => {
+    if (!email.trim() || !password.trim()) {
+      setError('Please enter both email and password');
       return;
     }
 
-    setUploading(true);
-    
+    setIsLoggingIn(true);
+    setError(null);
+
     try {
-      // Determine file path based on media type
-      const fileExtension = uploadForm.file.name.split('.').pop();
-      const fileName = `${Date.now()}_${uploadForm.file.name}`;
-      const filePath = uploadForm.mediatype === 'video' 
-        ? `videos/${fileName}` 
-        : `images/${fileName}`;
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password: password,
+      });
 
-      console.log('Uploading file:', filePath);
-
-      // Upload main file
-      const { data: uploadData, error: uploadError } = await supabase.storage
-        .from('media')
-        .upload(filePath, uploadForm.file);
-
-      if (uploadError) {
-        console.error('Error uploading file:', uploadError);
-        showNotification('error', `Upload failed: ${uploadError.message}`);
-        setUploading(false);
+      if (error) {
+        console.error('Supabase login error:', error);
+        setError(`Login failed: ${error.message}`);
+        setIsAuthenticated(false);
         return;
       }
+
+      if (data.session) {
+        setIsAuthenticated(true);
+        setEmail('');
+        setPassword('');
+        console.log('Successfully authenticated with Supabase:', data.session.user.email);
+      } else {
+        setError('Login failed: No session returned');
+        setIsAuthenticated(false);
+      }
+    } catch (err) {
+      console.error('Unexpected login error:', err);
+      setError('An unexpected error occurred during login');
+      setIsAuthenticated(false);
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  // Logout handler
+  const handleLogout = async () => {
+    try {
+      const { error } = await supabase.auth.signOut();
+      if (error) {
+        console.error('Logout error:', error);
+      }
+      setIsAuthenticated(false);
+      setMediaItems([]);
+    } catch (error) {
+      console.error('Logout error:', error);
+    }
+  };
+
+  // Enhanced file validation function with codec checking
+  const validateFile = (file: File, isThumbail = false): { isValid: boolean; error?: string } => {
+    if (isThumbail) {
+      // Validate thumbnail files (images only)
+      if (!ALLOWED_IMAGE_TYPES.includes(file.type)) {
+        return {
+          isValid: false,
+          error: `Thumbnail must be an image. Supported formats: JPG, PNG, GIF, WebP.`
+        };
+      }
+      
+      if (file.size > MAX_THUMBNAIL_SIZE) {
+        return {
+          isValid: false,
+          error: `Thumbnail file too large. Maximum size is ${MAX_THUMBNAIL_SIZE / (1024 * 1024)}MB.`
+        };
+      }
+      
+      return { isValid: true };
+    }
+
+    // Check file type
+    if (!ALL_ALLOWED_TYPES.includes(file.type)) {
+      return {
+        isValid: false,
+        error: `Unsupported file type: ${file.type}. Please select a valid image or video file.`
+      };
+    }
+
+    // Check file size
+    const isImage = ALLOWED_IMAGE_TYPES.includes(file.type);
+    const isVideo = ALLOWED_VIDEO_TYPES.includes(file.type);
+    
+    if (isImage && file.size > MAX_IMAGE_SIZE) {
+      return {
+        isValid: false,
+        error: `Image file too large. Maximum size is ${MAX_IMAGE_SIZE / (1024 * 1024)}MB.`
+      };
+    }
+    
+    if (isVideo && file.size > MAX_VIDEO_SIZE) {
+      return {
+        isValid: false,
+        error: `Video file too large. Maximum size is ${MAX_VIDEO_SIZE / (1024 * 1024)}MB.`
+      };
+    }
+
+    // Additional validation for video files
+    if (isVideo) {
+      // Check file extension matches MIME type for better validation
+      const fileName = file.name.toLowerCase();
+      if (file.type === 'video/mp4' && !fileName.endsWith('.mp4')) {
+        return {
+          isValid: false,
+          error: 'File extension does not match the video format. Please ensure the file is properly encoded.'
+        };
+      }
+      if (file.type === 'video/webm' && !fileName.endsWith('.webm')) {
+        return {
+          isValid: false,
+          error: 'File extension does not match the video format. Please ensure the file is properly encoded.'
+        };
+      }
+      if (file.type === 'video/ogg' && !fileName.endsWith('.ogg') && !fileName.endsWith('.ogv')) {
+        return {
+          isValid: false,
+          error: 'File extension does not match the video format. Please ensure the file is properly encoded.'
+        };
+      }
+    }
+
+    return { isValid: true };
+  };
+
+  // URL validation function
+  const validateUrl = (url: string): { isValid: boolean; error?: string } => {
+    try {
+      new URL(url);
+      return { isValid: true };
+    } catch {
+      return {
+        isValid: false,
+        error: 'Please enter a valid URL'
+      };
+    }
+  };
+
+  // Reset upload state
+  const resetUploadState = () => {
+    setUploadState({
+      isUploading: false,
+      progress: 0,
+      status: 'idle',
+      message: ''
+    });
+  };
+
+  // Reset form
+  const resetForm = () => {
+    setNewMedia({
+      title: '',
+      description: '',
+      type_detail: '',
+      externalUrl: '',
+      linkType: 'image',
+      file: null,
+      thumbnailFile: null
+    });
+    
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+    
+    if (thumbnailInputRef.current) {
+      thumbnailInputRef.current.value = '';
+    }
+    
+    resetUploadState();
+  };
+
+  // Enhanced file upload handler with progress tracking and thumbnail support
+  const handleFileUpload = async () => {
+    if (!newMedia.file || !newMedia.title.trim()) {
+      setError('Please provide a title and select a file');
+      return;
+    }
+
+    // Validate main file
+    const validation = validateFile(newMedia.file);
+    if (!validation.isValid) {
+      setError(validation.error || 'Invalid file');
+      return;
+    }
+
+    // Validate thumbnail if provided (for videos)
+    if (newMedia.thumbnailFile) {
+      const thumbnailValidation = validateFile(newMedia.thumbnailFile, true);
+      if (!thumbnailValidation.isValid) {
+        setError(thumbnailValidation.error || 'Invalid thumbnail file');
+        return;
+      }
+    }
+
+    // Reset any previous errors
+    setError(null);
+    
+    // Initialize upload state
+    setUploadState({
+      isUploading: true,
+      progress: 0,
+      status: 'uploading',
+      message: 'Starting upload...'
+    });
+
+    try {
+      // Create a unique filename with timestamp
+      const timestamp = Date.now();
+      const sanitizedFileName = newMedia.file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
+      const fileName = `${activeTab}s/${timestamp}_${sanitizedFileName}`;
+
+      console.log('Starting upload to Supabase Storage:', fileName);
+
+      // Upload main file to Supabase Storage with public access
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from('media')
+        .upload(fileName, newMedia.file, {
+          cacheControl: '3600',
+          upsert: false,
+          public: true
+        });
+
+      if (uploadError) {
+        console.error('Upload error:', uploadError);
+        setUploadState({
+          isUploading: false,
+          progress: 0,
+          status: 'error',
+          message: `Upload failed: ${uploadError.message}`
+        });
+        setError(`Upload failed: ${uploadError.message}`);
+        return;
+      }
+
+      console.log('Upload completed successfully:', uploadData);
 
       // Get public URL for main file
       const { data: urlData } = supabase.storage
         .from('media')
-        .getPublicUrl(filePath);
+        .getPublicUrl(fileName);
 
+      const publicUrl = urlData.publicUrl;
+      console.log('Public URL obtained:', publicUrl);
+
+      // Handle thumbnail upload if provided
       let thumbnailUrl = null;
       let thumbnailPath = null;
+      
+      if (newMedia.thumbnailFile && activeTab === 'video') {
+        setUploadState(prev => ({
+          ...prev,
+          progress: 50,
+          message: 'Uploading thumbnail...'
+        }));
 
-      // CRITICAL: Handle video thumbnail upload if provided
-      if (uploadForm.mediatype === 'video' && uploadForm.thumbnailFile) {
-        const thumbnailExtension = uploadForm.thumbnailFile.name.split('.').pop();
-        const thumbnailFileName = `${Date.now()}_thumbnail_${uploadForm.thumbnailFile.name}`;
-        const thumbnailFilePath = `thumbnails/${thumbnailFileName}`;
-
-        console.log('Uploading video thumbnail:', thumbnailFilePath);
-
+        const thumbnailFileName = `thumbnails/${timestamp}_${newMedia.thumbnailFile.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
+        
         const { data: thumbnailUploadData, error: thumbnailUploadError } = await supabase.storage
           .from('media')
-          .upload(thumbnailFilePath, uploadForm.thumbnailFile);
+          .upload(thumbnailFileName, newMedia.thumbnailFile, {
+            cacheControl: '3600',
+            upsert: false,
+            public: true
+          });
 
         if (thumbnailUploadError) {
-          console.error('Error uploading thumbnail:', thumbnailUploadError);
-          showNotification('error', `Thumbnail upload failed: ${thumbnailUploadError.message}`);
+          console.error('Thumbnail upload error:', thumbnailUploadError);
+          // Continue without thumbnail if upload fails
+          console.log('Continuing without thumbnail due to upload error');
         } else {
           const { data: thumbnailUrlData } = supabase.storage
             .from('media')
-            .getPublicUrl(thumbnailFilePath);
+            .getPublicUrl(thumbnailFileName);
           
           thumbnailUrl = thumbnailUrlData.publicUrl;
-          thumbnailPath = thumbnailFilePath;
+          thumbnailPath = thumbnailFileName;
           console.log('Thumbnail uploaded successfully:', thumbnailUrl);
         }
       }
 
-      // Save to database
-      const mediaData = {
-        name: uploadForm.file.name,
-        url: urlData.publicUrl,
-        type: uploadForm.file.type,
-        title: uploadForm.title || uploadForm.file.name,
-        description: uploadForm.description || '',
-        type_detail: uploadForm.type_detail || '', // NEW: Type classification
-        mediatype: uploadForm.mediatype,
+      // Update progress
+      setUploadState(prev => ({
+        ...prev,
+        progress: 90,
+        message: 'Upload complete! Saving metadata...'
+      }));
+
+      // Determine media type based on file type
+      const isImage = ALLOWED_IMAGE_TYPES.includes(newMedia.file.type);
+      const mediaType = activeTab === 'artwork' ? 'artwork' : 'video';
+
+      // Create media document in Supabase
+      const mediaDoc = {
+        name: sanitizedFileName,
+        url: publicUrl,
+        type: newMedia.file.type,
+        title: newMedia.title.trim(),
+        description: newMedia.description.trim(),
+        type_detail: activeTab === 'artwork' ? newMedia.type_detail.trim() : '', // Only for images
+        mediatype: mediaType,
         isexternallink: false,
-        storagepath: filePath,
+        storagepath: fileName,
         video_thumbnail_url: thumbnailUrl, // NEW: Custom thumbnail URL
         video_thumbnail_path: thumbnailPath // NEW: Thumbnail storage path
       };
 
-      console.log('Saving media data to database:', mediaData);
-
-      const { error: dbError } = await supabase
+      console.log('Saving to Supabase:', mediaDoc);
+      
+      const { error: insertError } = await supabase
         .from('website_media')
-        .insert([mediaData]);
+        .insert([mediaDoc]);
 
-      if (dbError) {
-        console.error('Error saving to database:', dbError);
-        showNotification('error', `Database error: ${dbError.message}`);
-        setUploading(false);
+      if (insertError) {
+        console.error('Database error:', insertError);
+        setUploadState({
+          isUploading: false,
+          progress: 0,
+          status: 'error',
+          message: 'Upload completed but failed to save metadata. Please try again.'
+        });
+        setError('Failed to save media metadata. Please try again.');
         return;
       }
 
-      console.log('File uploaded and saved successfully');
-      showNotification('success', 'File uploaded successfully');
-      
-      // Reset form
-      setUploadForm({
-        file: null,
-        thumbnailFile: null,
-        title: '',
-        description: '',
-        type_detail: '',
-        mediatype: 'artwork',
-        isExternalLink: false,
-        externalUrl: ''
+      // Success state
+      setUploadState({
+        isUploading: false,
+        progress: 100,
+        status: 'success',
+        message: 'Media uploaded successfully!'
       });
-      
-      // Refresh media items
-      fetchMediaItems();
+
+      // Reset form after a short delay
+      setTimeout(() => {
+        resetForm();
+      }, 2000);
+
     } catch (error) {
-      console.error('Error during upload:', error);
-      showNotification('error', 'Upload failed');
+      console.error('Upload error:', error);
+      setUploadState({
+        isUploading: false,
+        progress: 0,
+        status: 'error',
+        message: 'Failed to upload. Please check your connection and try again.'
+      });
+      setError('Failed to upload. Please try again.');
     }
-    
-    setUploading(false);
   };
 
-  const handleExternalLinkUpload = async () => {
-    if (!uploadForm.externalUrl) {
-      showNotification('error', 'Please enter a valid URL');
+  // Handle external link submission
+  const handleLinkSubmission = async () => {
+    if (!newMedia.externalUrl.trim() || !newMedia.title.trim()) {
+      setError('Please provide a title and URL');
       return;
     }
 
-    setUploading(true);
+    // Validate URL
+    const validation = validateUrl(newMedia.externalUrl.trim());
+    if (!validation.isValid) {
+      setError(validation.error || 'Invalid URL');
+      return;
+    }
+
+    // Reset any previous errors
+    setError(null);
     
+    // Initialize upload state
+    setUploadState({
+      isUploading: true,
+      progress: 0,
+      status: 'uploading',
+      message: 'Saving link...'
+    });
+
     try {
-      const mediaData = {
-        name: uploadForm.title || 'External Link',
-        url: uploadForm.externalUrl,
-        type: uploadForm.mediatype === 'video' ? 'video-link' : 'image-link',
-        title: uploadForm.title || 'External Link',
-        description: uploadForm.description || '',
-        type_detail: uploadForm.type_detail || '', // NEW: Type classification
-        mediatype: uploadForm.mediatype,
-        isexternallink: true,
-        storagepath: null
+      // Determine media type based on selection and active tab
+      const mediaType = activeTab === 'artwork' ? 'artwork' : 'video';
+      const linkTypePrefix = newMedia.linkType === 'image' ? 'image' : 'video';
+
+      // Create media document in Supabase
+      const mediaDoc = {
+        name: newMedia.title.trim(),
+        url: newMedia.externalUrl.trim(),
+        type: `${linkTypePrefix}-link`,
+        title: newMedia.title.trim(),
+        description: newMedia.description.trim(),
+        type_detail: activeTab === 'artwork' ? newMedia.type_detail.trim() : '', // Only for images
+        mediatype: mediaType,
+        isexternallink: true
       };
 
-      console.log('Saving external link to database:', mediaData);
-
-      const { error: dbError } = await supabase
+      console.log('Saving external link to Supabase:', mediaDoc);
+      
+      const { error: insertError } = await supabase
         .from('website_media')
-        .insert([mediaData]);
+        .insert([mediaDoc]);
 
-      if (dbError) {
-        console.error('Error saving external link:', dbError);
-        showNotification('error', `Database error: ${dbError.message}`);
-        setUploading(false);
+      if (insertError) {
+        console.error('Database error:', insertError);
+        setUploadState({
+          isUploading: false,
+          progress: 0,
+          status: 'error',
+          message: 'Failed to save link. Please try again.'
+        });
+        setError('Failed to save link. Please try again.');
         return;
       }
 
-      console.log('External link saved successfully');
-      showNotification('success', 'External link added successfully');
-      
-      // Reset form
-      setUploadForm({
-        file: null,
-        thumbnailFile: null,
-        title: '',
-        description: '',
-        type_detail: '',
-        mediatype: 'artwork',
-        isExternalLink: false,
-        externalUrl: ''
+      // Success state
+      setUploadState({
+        isUploading: false,
+        progress: 100,
+        status: 'success',
+        message: 'Link saved successfully!'
       });
-      
-      fetchMediaItems();
+
+      // Reset form after a short delay
+      setTimeout(() => {
+        resetForm();
+      }, 2000);
+
     } catch (error) {
-      console.error('Error saving external link:', error);
-      showNotification('error', 'Failed to save external link');
+      console.error('Link submission error:', error);
+      setUploadState({
+        isUploading: false,
+        progress: 0,
+        status: 'error',
+        message: 'Failed to save link. Please try again.'
+      });
+      setError('Failed to save link. Please try again.');
     }
-    
-    setUploading(false);
   };
 
-  // CRITICAL: Proper edit form initialization with all fields
-  const startEdit = (item: MediaItem) => {
-    console.log('Starting edit for item:', item);
-    setEditingId(item.id);
-    setEditForm({
-      title: item.title || '',
-      description: item.description || '',
-      type_detail: item.type_detail || '',
-      name: item.name || ''
+  // Delete media handler
+  const handleDeleteMedia = async (item: MediaItem) => {
+    setConfirmDialog({
+      isOpen: true,
+      title: 'Delete Media',
+      message: `Are you sure you want to delete "${item.title}"? This action cannot be undone.`,
+      onConfirm: async () => {
+        setIsDeleting(item.id);
+        setError(null);
+
+        try {
+          // Delete from Supabase database first
+          const { error: deleteError } = await supabase
+            .from('website_media')
+            .delete()
+            .eq('id', item.id);
+
+          if (deleteError) {
+            console.error('Database deletion error:', deleteError);
+            setError('Failed to delete media. Please try again.');
+            return;
+          }
+
+          // If it's a file (not external link), delete from Storage
+          if (!item.isexternallink && item.storagepath) {
+            const { error: storageError } = await supabase.storage
+              .from('media')
+              .remove([item.storagepath]);
+
+            if (storageError) {
+              console.error('Storage deletion error:', storageError);
+              // Don't show error for storage deletion as the database record is already gone
+            }
+          }
+
+          // Delete thumbnail if exists
+          if (item.video_thumbnail_path) {
+            const { error: thumbnailError } = await supabase.storage
+              .from('media')
+              .remove([item.video_thumbnail_path]);
+
+            if (thumbnailError) {
+              console.error('Thumbnail deletion error:', thumbnailError);
+              // Don't show error for thumbnail deletion
+            }
+          }
+
+        } catch (error) {
+          console.error('Error deleting media:', error);
+          setError('Failed to delete media. Please try again.');
+        } finally {
+          setIsDeleting(null);
+          setConfirmDialog({ ...confirmDialog, isOpen: false });
+        }
+      }
     });
   };
 
-  const cancelEdit = () => {
-    setEditingId(null);
-    setEditForm({});
+  // FIXED: Update media handler with proper field handling
+  const handleUpdateMedia = async () => {
+    if (!editingItem || !editingItem.title.trim()) {
+      setError('Please provide a title');
+      return;
+    }
+
+    setUploadState({
+      isUploading: true,
+      progress: 0,
+      status: 'uploading',
+      message: 'Updating media...'
+    });
+
+    try {
+      const updateData = {
+        title: editingItem.title.trim(),
+        description: editingItem.description?.trim() || '',
+        type_detail: editingItem.type_detail?.trim() || '' // Include type_detail in updates
+      };
+
+      console.log('Updating media with data:', updateData);
+
+      const { error: updateError } = await supabase
+        .from('website_media')
+        .update(updateData)
+        .eq('id', editingItem.id);
+
+      if (updateError) {
+        console.error('Update error:', updateError);
+        setUploadState({
+          isUploading: false,
+          progress: 0,
+          status: 'error',
+          message: 'Failed to update media. Please try again.'
+        });
+        setError('Failed to update media. Please try again.');
+        return;
+      }
+      
+      setUploadState({
+        isUploading: false,
+        progress: 100,
+        status: 'success',
+        message: 'Media updated successfully!'
+      });
+      
+      setEditingItem(null);
+      
+      // Reset success state after delay
+      setTimeout(() => {
+        resetUploadState();
+      }, 2000);
+
+    } catch (error) {
+      console.error('Error updating media:', error);
+      setUploadState({
+        isUploading: false,
+        progress: 0,
+        status: 'error',
+        message: 'Failed to update media. Please try again.'
+      });
+      setError('Failed to update media. Please try again.');
+    }
   };
 
+  // Handle file selection with validation
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const validation = validateFile(file);
+      if (validation.isValid) {
+        setNewMedia({ ...newMedia, file });
+        setError(null);
+        resetUploadState();
+      } else {
+        setError(validation.error || 'Invalid file');
+        if (fileInputRef.current) {
+          fileInputRef.current.value = '';
+        }
+      }
+    }
+  };
+
+  // NEW: Handle thumbnail file selection
+  const handleThumbnailSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const validation = validateFile(file, true);
+      if (validation.isValid) {
+        setNewMedia({ ...newMedia, thumbnailFile: file });
+        setError(null);
+      } else {
+        setError(validation.error || 'Invalid thumbnail file');
+        if (thumbnailInputRef.current) {
+          thumbnailInputRef.current.value = '';
+        }
+      }
+    }
+  };
+
+  // Handle backdrop click
   const handleBackdropClick = (e: React.MouseEvent) => {
     if (e.target === e.currentTarget) {
       onClose();
     }
   };
 
-  // NEW: Filter media items based on active tab
-  const filteredMediaItems = mediaItems.filter(item => {
-    if (activeTab === 'images') {
-      return item.mediatype === 'artwork' || (item.isexternallink && item.type === 'image-link');
-    } else {
-      return item.mediatype === 'video' || (item.isexternallink && item.type === 'video-link');
-    }
-  });
+  // Filter media items by active tab
+  const filteredItems = mediaItems.filter(item => item.mediatype === activeTab);
 
-  return (
-    <div 
-      className="fixed inset-0 bg-black bg-opacity-90 flex items-center justify-center z-[200] p-4"
-      onClick={handleBackdropClick}
-    >
-      {/* CRITICAL: Properly sized admin modal to fit desktop screen - Reduced to 80% width and constrained height */}
-      <div className="bg-gray-800 rounded-2xl md:rounded-[38px] p-4 md:p-6 relative animate-in fade-in zoom-in duration-300 w-full max-w-4xl max-h-[90vh] overflow-hidden">
-        <button
-          onClick={onClose}
-          className="absolute top-4 right-4 md:top-6 md:right-6 text-gray-400 hover:text-white transition-colors duration-200 z-10"
-        >
-          <X size={20} className="md:w-6 md:h-6" />
-        </button>
+  // Login screen
+  if (!isAuthenticated) {
+    return (
+      <div 
+        className="fixed inset-0 bg-black bg-opacity-90 flex items-center justify-center z-[120] p-4"
+        onClick={handleBackdropClick}
+      >
+        <div className="bg-gray-800 rounded-2xl p-8 max-w-md mx-4 relative animate-in fade-in zoom-in duration-300 w-full">
+          <button
+            onClick={onClose}
+            className="absolute top-4 right-4 text-gray-400 hover:text-white transition-colors duration-200"
+          >
+            <X size={20} />
+          </button>
 
-        <h2 className="text-white text-xl md:text-2xl font-bold mb-4 md:mb-6">Media Manager</h2>
-
-        {/* Notification */}
-        {notification && (
-          <div className={`mb-4 p-3 rounded-lg flex items-center gap-2 ${
-            notification.type === 'success' 
-              ? 'bg-green-600 bg-opacity-20 border border-green-600 text-green-400'
-              : 'bg-red-600 bg-opacity-20 border border-red-600 text-red-400'
-          }`}>
-            {notification.type === 'success' ? <Check className="w-4 h-4" /> : <AlertCircle className="w-4 h-4" />}
-            <span className="text-sm">{notification.message}</span>
-          </div>
-        )}
-
-        <div className="flex flex-col lg:flex-row gap-6 h-full">
-          {/* Upload Section */}
-          <div className="lg:w-1/3 space-y-4">
-            <h3 className="text-white text-lg font-semibold">Upload Media</h3>
+          <h2 className="text-white text-2xl font-bold mb-6 text-center">Admin Access</h2>
+          
+          {error && (
+            <div className="bg-red-600 bg-opacity-20 border border-red-600 text-red-400 px-4 py-3 rounded-lg mb-4">
+              {error}
+            </div>
+          )}
+          
+          <div className="space-y-4">
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="Admin email"
+              className="w-full bg-gray-700 text-white placeholder-gray-400 px-4 py-3 rounded-lg border-none focus:outline-none focus:ring-2 focus:ring-blue-600"
+              onKeyPress={(e) => e.key === 'Enter' && handleLogin()}
+              disabled={isLoggingIn}
+            />
             
-            {/* Media Type Selection */}
-            <div className="space-y-2">
-              <label className="text-gray-300 text-sm">Media Type</label>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => setUploadForm(prev => ({ ...prev, mediatype: 'artwork' }))}
-                  className={`px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                    uploadForm.mediatype === 'artwork'
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                  }`}
-                >
-                  <Image className="w-4 h-4 inline mr-1" />
-                  Artwork
-                </button>
-                <button
-                  onClick={() => setUploadForm(prev => ({ ...prev, mediatype: 'video' }))}
-                  className={`px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                    uploadForm.mediatype === 'video'
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                  }`}
-                >
-                  <Video className="w-4 h-4 inline mr-1" />
-                  Video
-                </button>
-              </div>
-            </div>
-
-            {/* Upload Method Selection */}
-            <div className="space-y-2">
-              <label className="text-gray-300 text-sm">Upload Method</label>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => setUploadForm(prev => ({ ...prev, isExternalLink: false }))}
-                  className={`px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                    !uploadForm.isExternalLink
-                      ? 'bg-green-600 text-white'
-                      : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                  }`}
-                >
-                  <Upload className="w-4 h-4 inline mr-1" />
-                  Upload File
-                </button>
-                <button
-                  onClick={() => setUploadForm(prev => ({ ...prev, isExternalLink: true }))}
-                  className={`px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                    uploadForm.isExternalLink
-                      ? 'bg-green-600 text-white'
-                      : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                  }`}
-                >
-                  <ExternalLink className="w-4 h-4 inline mr-1" />
-                  External Link
-                </button>
-              </div>
-            </div>
-
-            {/* File Upload or External URL */}
-            {uploadForm.isExternalLink ? (
-              <div className="space-y-2">
-                <label className="text-gray-300 text-sm">External URL</label>
-                <input
-                  type="url"
-                  value={uploadForm.externalUrl}
-                  onChange={(e) => setUploadForm(prev => ({ ...prev, externalUrl: e.target.value }))}
-                  placeholder="https://example.com/image.jpg"
-                  className="w-full bg-gray-700 text-white placeholder-gray-500 px-3 py-2 rounded-lg border-none focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
-                />
-              </div>
-            ) : (
-              <>
-                {/* Main File Upload */}
-                <div className="space-y-2">
-                  <label className="text-gray-300 text-sm">
-                    {uploadForm.mediatype === 'video' ? 'Video File' : 'Image File'}
-                  </label>
-                  <input
-                    type="file"
-                    accept={uploadForm.mediatype === 'video' ? 'video/*' : 'image/*'}
-                    onChange={(e) => setUploadForm(prev => ({ ...prev, file: e.target.files?.[0] || null }))}
-                    className="w-full bg-gray-700 text-white px-3 py-2 rounded-lg border-none focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm file:mr-4 file:py-1 file:px-2 file:rounded file:border-0 file:text-sm file:bg-blue-600 file:text-white hover:file:bg-blue-700"
-                  />
-                </div>
-
-                {/* CRITICAL: Video Thumbnail Upload - NEW FEATURE */}
-                {uploadForm.mediatype === 'video' && (
-                  <div className="space-y-2">
-                    <label className="text-gray-300 text-sm">Video Thumbnail (Optional)</label>
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={(e) => setUploadForm(prev => ({ ...prev, thumbnailFile: e.target.files?.[0] || null }))}
-                      className="w-full bg-gray-700 text-white px-3 py-2 rounded-lg border-none focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm file:mr-4 file:py-1 file:px-2 file:rounded file:border-0 file:text-sm file:bg-green-600 file:text-white hover:file:bg-green-700"
-                    />
-                    <p className="text-gray-500 text-xs">Upload a custom thumbnail image for this video (max 5MB)</p>
-                  </div>
-                )}
-              </>
-            )}
-
-            {/* Title */}
-            <div className="space-y-2">
-              <label className="text-gray-300 text-sm">Title</label>
+            <div className="relative">
               <input
-                type="text"
-                value={uploadForm.title}
-                onChange={(e) => setUploadForm(prev => ({ ...prev, title: e.target.value }))}
-                placeholder="Enter title"
-                className="w-full bg-gray-700 text-white placeholder-gray-500 px-3 py-2 rounded-lg border-none focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
+                type={showPassword ? "text" : "password"}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Password"
+                className="w-full bg-gray-700 text-white placeholder-gray-400 px-4 py-3 rounded-lg border-none focus:outline-none focus:ring-2 focus:ring-blue-600 pr-12"
+                onKeyPress={(e) => e.key === 'Enter' && handleLogin()}
+                disabled={isLoggingIn}
               />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-white"
+                disabled={isLoggingIn}
+              >
+                {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+              </button>
             </div>
-
-            {/* Description */}
-            <div className="space-y-2">
-              <label className="text-gray-300 text-sm">Description</label>
-              <textarea
-                value={uploadForm.description}
-                onChange={(e) => setUploadForm(prev => ({ ...prev, description: e.target.value }))}
-                placeholder="Enter description"
-                rows={3}
-                className="w-full bg-gray-700 text-white placeholder-gray-500 px-3 py-2 rounded-lg border-none focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm resize-none"
-              />
-            </div>
-
-            {/* CRITICAL: Type Detail for Images - NEW FEATURE */}
-            {uploadForm.mediatype === 'artwork' && (
-              <div className="space-y-2">
-                <label className="text-gray-300 text-sm">Type Detail</label>
-                <input
-                  type="text"
-                  value={uploadForm.type_detail}
-                  onChange={(e) => setUploadForm(prev => ({ ...prev, type_detail: e.target.value }))}
-                  placeholder="e.g., painting, sculpture, photography, digital art"
-                  className="w-full bg-gray-700 text-white placeholder-gray-500 px-3 py-2 rounded-lg border-none focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
-                />
-              </div>
-            )}
-
-            {/* Upload Button */}
+            
             <button
-              onClick={handleUpload}
-              disabled={uploading || (!uploadForm.file && !uploadForm.externalUrl)}
-              className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:cursor-not-allowed text-white font-semibold py-2 px-4 rounded-lg transition-colors duration-200 text-sm flex items-center justify-center gap-2"
+              onClick={handleLogin}
+              disabled={isLoggingIn || !email.trim() || !password.trim()}
+              className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-semibold py-3 px-6 rounded-lg transition-colors duration-200 flex items-center justify-center gap-2"
             >
-              {uploading ? (
+              {isLoggingIn ? (
                 <>
                   <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                  Uploading...
+                  Signing in...
                 </>
               ) : (
-                <>
-                  <Upload className="w-4 h-4" />
-                  Upload
-                </button>
+                'Sign In'
               )}
             </button>
           </div>
-
-          {/* CRITICAL: Media List with Tabs and Scrolling - Enhanced with proper sizing */}
-          <div className="lg:w-2/3 flex flex-col">
-            {/* NEW: Tab buttons for separating media types */}
-            <div className="flex gap-2 mb-4">
-              <button
-                onClick={() => setActiveTab('images')}
-                className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                  activeTab === 'images'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                }`}
-              >
-                <Image className="w-4 h-4 inline mr-2" />
-                Images ({mediaItems.filter(item => item.mediatype === 'artwork' || (item.isexternallink && item.type === 'image-link')).length})
-              </button>
-              <button
-                onClick={() => setActiveTab('videos')}
-                className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                  activeTab === 'videos'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                }`}
-              >
-                <Video className="w-4 h-4 inline mr-2" />
-                Videos ({mediaItems.filter(item => item.mediatype === 'video' || (item.isexternallink && item.type === 'video-link')).length})
-              </button>
-            </div>
-            
-            <h3 className="text-white text-lg font-semibold mb-4">
-              {activeTab === 'images' ? 'Image Library' : 'Video Library'}
-            </h3>
-            
-            {loading ? (
-              <div className="flex items-center justify-center h-64">
-                <div className="w-8 h-8 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-              </div>
-            ) : (
-              /* CRITICAL: Scrollable container with hidden scrollbar and proper height - FITS DESKTOP SCREEN */
-              <div className="flex-1 overflow-y-auto hide-scrollbar max-h-[50vh] pr-2">
-                <div className="space-y-3">
-                  {filteredMediaItems.map((item) => (
-                    <div key={item.id} className="bg-gray-700 rounded-lg p-4">
-                      <div className="flex items-start gap-4">
-                        {/* Thumbnail */}
-                        <div className="w-16 h-16 bg-gray-600 rounded-lg overflow-hidden flex-shrink-0">
-                          {item.mediatype === 'video' ? (
-                            item.video_thumbnail_url ? (
-                              <img 
-                                src={item.video_thumbnail_url} 
-                                alt="Video thumbnail"
-                                className="w-full h-full object-cover"
-                              />
-                            ) : (
-                              <div className="w-full h-full bg-gradient-to-br from-purple-600 to-blue-600 flex items-center justify-center">
-                                <Video className="w-6 h-6 text-white" />
-                              </div>
-                            )
-                          ) : (
-                            <img 
-                              src={item.url} 
-                              alt={item.title || item.name}
-                              className="w-full h-full object-cover"
-                              onError={(e) => {
-                                const target = e.target as HTMLImageElement;
-                                target.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHZpZXdCb3g9IjAgMCA2NCA2NCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIGZpbGw9IiM0QjU1NjMiLz48dGV4dCB4PSIzMiIgeT0iMzIiIGZvbnQtZmFtaWx5PSJBcmlhbCIgZm9udC1zaXplPSIxMCIgZmlsbD0iIzlFQTNBRiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZHk9Ii4zZW0iPkVycm9yPC90ZXh0Pjwvc3ZnPg==';
-                              }}
-                            />
-                          )}
-                        </div>
-
-                        {/* Content */}
-                        <div className="flex-1 min-w-0">
-                          {editingId === item.id ? (
-                            /* CRITICAL: Edit Form with proper field handling */
-                            <div className="space-y-3">
-                              <input
-                                type="text"
-                                value={editForm.title || ''}
-                                onChange={(e) => setEditForm(prev => ({ ...prev, title: e.target.value }))}
-                                placeholder="Title"
-                                className="w-full bg-gray-600 text-white placeholder-gray-400 px-3 py-2 rounded text-sm border-none focus:outline-none focus:ring-2 focus:ring-blue-600"
-                              />
-                              <textarea
-                                value={editForm.description || ''}
-                                onChange={(e) => setEditForm(prev => ({ ...prev, description: e.target.value }))}
-                                placeholder="Description"
-                                rows={2}
-                                className="w-full bg-gray-600 text-white placeholder-gray-400 px-3 py-2 rounded text-sm border-none focus:outline-none focus:ring-2 focus:ring-blue-600 resize-none"
-                              />
-                              {/* CRITICAL: Type detail editing for images */}
-                              {item.mediatype === 'artwork' && (
-                                <input
-                                  type="text"
-                                  value={editForm.type_detail || ''}
-                                  onChange={(e) => setEditForm(prev => ({ ...prev, type_detail: e.target.value }))}
-                                  placeholder="Type detail (e.g., painting, sculpture)"
-                                  className="w-full bg-gray-600 text-white placeholder-gray-400 px-3 py-2 rounded text-sm border-none focus:outline-none focus:ring-2 focus:ring-blue-600"
-                                />
-                              )}
-                              <div className="flex gap-2">
-                                <button
-                                  onClick={() => handleUpdate(item.id)}
-                                  className="bg-green-600 hover:bg-green-700 text-white px-3 py-1 rounded text-sm flex items-center gap-1"
-                                >
-                                  <Save className="w-3 h-3" />
-                                  Save
-                                </button>
-                                <button
-                                  onClick={cancelEdit}
-                                  className="bg-gray-600 hover:bg-gray-700 text-white px-3 py-1 rounded text-sm flex items-center gap-1"
-                                >
-                                  <Cancel className="w-3 h-3" />
-                                  Cancel
-                                </button>
-                              </div>
-                            </div>
-                          ) : (
-                            /* Display Mode */
-                            <div>
-                              <div className="flex items-center gap-2 mb-1">
-                                <h4 className="text-white font-medium text-sm truncate">
-                                  {item.title || item.name}
-                                </h4>
-                                <div className="flex items-center gap-1">
-                                  {item.isexternallink ? (
-                                    <ExternalLink className="w-3 h-3 text-blue-400" />
-                                  ) : (
-                                    <Upload className="w-3 h-3 text-green-400" />
-                                  )}
-                                  <span className="text-xs text-gray-400 capitalize">
-                                    {item.mediatype}
-                                  </span>
-                                </div>
-                              </div>
-                              
-                              {item.description && (
-                                <p className="text-gray-300 text-xs mb-2 line-clamp-2">
-                                  {item.description}
-                                </p>
-                              )}
-                              
-                              {/* CRITICAL: Display type detail for images */}
-                              {item.type_detail && (
-                                <p className="text-blue-300 text-xs mb-2 capitalize">
-                                  Type: {item.type_detail}
-                                </p>
-                              )}
-                              
-                              <div className="flex items-center gap-2">
-                                <button
-                                  onClick={() => startEdit(item)}
-                                  className="bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded text-xs flex items-center gap-1"
-                                >
-                                  <Edit className="w-3 h-3" />
-                                  Edit
-                                </button>
-                                <button
-                                  onClick={() => handleDelete(item.id, item.storagepath || undefined)}
-                                  className="bg-red-600 hover:bg-red-700 text-white px-2 py-1 rounded text-xs flex items-center gap-1"
-                                >
-                                  <Trash2 className="w-3 h-3" />
-                                  Delete
-                                </button>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                  
-                  {filteredMediaItems.length === 0 && (
-                    <div className="text-center py-8">
-                      <p className="text-gray-400">
-                        No {activeTab} found
-                      </p>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
+          
+          <div className="mt-6 p-4 bg-gray-700 rounded-lg">
+            <p className="text-gray-300 text-sm">
+              <strong>Note:</strong> You need to create an admin user in your Supabase project first. 
+              Go to your Supabase dashboard → Authentication → Users to create an admin account.
+            </p>
           </div>
         </div>
       </div>
-    </div>
+    );
+  }
+
+  // Main admin interface
+  return (
+    <>
+      <div 
+        className="fixed inset-0 bg-black bg-opacity-90 flex items-center justify-center z-[120] p-4"
+        onClick={handleBackdropClick}
+      >
+        {/* FIXED: Reduced admin modal width by 20% and added scrolling */}
+        <div className="bg-gray-800 rounded-2xl p-6 w-full max-w-5xl mx-4 relative animate-in fade-in zoom-in duration-300 max-h-[90vh] overflow-hidden">
+          <div className="flex justify-between items-center mb-6">
+            <h2 className="text-white text-2xl font-bold">Media Management Portal</h2>
+            <div className="flex items-center gap-4">
+              <button
+                onClick={handleLogout}
+                className="text-gray-400 hover:text-white transition-colors duration-200 text-sm"
+              >
+                Sign Out
+              </button>
+              <button
+                onClick={onClose}
+                className="text-gray-400 hover:text-white transition-colors duration-200"
+              >
+                <X size={20} />
+              </button>
+            </div>
+          </div>
+
+          {error && (
+            <div className="bg-red-600 bg-opacity-20 border border-red-600 text-red-400 px-4 py-3 rounded-lg mb-4">
+              {error}
+            </div>
+          )}
+
+          {/* Tabs */}
+          <div className="flex space-x-4 mb-6">
+            <button
+              onClick={() => setActiveTab('artwork')}
+              className={`px-6 py-3 rounded-lg font-semibold transition-colors duration-200 ${
+                activeTab === 'artwork' 
+                  ? 'bg-blue-600 text-white' 
+                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+              }`}
+            >
+              Artworks ({filteredItems.filter(item => item.mediatype === 'artwork').length})
+            </button>
+            <button
+              onClick={() => setActiveTab('video')}
+              className={`px-6 py-3 rounded-lg font-semibold transition-colors duration-200 ${
+                activeTab === 'video' 
+                  ? 'bg-blue-600 text-white' 
+                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+              }`}
+            >
+              Videos ({filteredItems.filter(item => item.mediatype === 'video').length})
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 h-[calc(90vh-250px)]">
+            {/* Media List - FIXED: Added scrolling and proper sizing */}
+            <div className="xl:col-span-2 space-y-4">
+              <h3 className="text-white text-lg font-semibold">
+                Current {activeTab === 'artwork' ? 'Artworks' : 'Videos'}
+              </h3>
+              
+              {/* FIXED: Added max-height and scrolling to media list */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-h-[60vh] overflow-y-auto scrollbar-thin scrollbar-thumb-gray-600 scrollbar-track-transparent pr-2">
+                {filteredItems.map((item) => (
+                  <div key={item.id} className="bg-gray-700 rounded-xl p-4 group hover:bg-gray-650 transition-colors duration-200">
+                    <div className="relative w-full h-32 bg-gray-600 rounded-lg overflow-hidden mb-3">
+                      <img 
+                        src={item.video_thumbnail_url || item.url} 
+                        alt={item.title || item.name}
+                        className="w-full h-full object-cover"
+                        onError={(e) => {
+                          const target = e.target as HTMLImageElement;
+                          target.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjNGI1NTYzIi8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZvbnQtZmFtaWx5PSJBcmlhbCIgZm9udC1zaXplPSIxNCIgZmlsbD0iIzllYTNhZiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZHk9Ii4zZW0iPkltYWdlIEVycm9yPC90ZXh0Pjwvc3ZnPg==';
+                        }}
+                      />
+                      {/* Media type indicator */}
+                      <div className="absolute top-2 left-2">
+                        {item.isexternallink ? (
+                          <Link className="w-4 h-4 text-blue-400" />
+                        ) : (
+                          item.type.startsWith('image') ? (
+                            <FileImage className="w-4 h-4 text-green-400" />
+                          ) : (
+                            <Video className="w-4 h-4 text-purple-400" />
+                          )
+                        )}
+                      </div>
+                      {/* Thumbnail indicator for videos */}
+                      {item.video_thumbnail_url && (
+                        <div className="absolute top-2 right-2 bg-green-600 text-white text-xs px-2 py-1 rounded">
+                          Custom Thumbnail
+                        </div>
+                      )}
+                      {isDeleting === item.id && (
+                        <div className="absolute inset-0 bg-black bg-opacity-75 flex items-center justify-center">
+                          <div className="w-6 h-6 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                        </div>
+                      )}
+                    </div>
+                    
+                    <div className="space-y-2">
+                      <h4 className="text-white font-semibold text-sm truncate">
+                        {item.title || item.name}
+                      </h4>
+                      <p className="text-gray-500 text-xs truncate">{item.description}</p>
+                      {/* Show type detail for images */}
+                      {item.type_detail && (
+                        <p className="text-blue-300 text-xs capitalize">{item.type_detail}</p>
+                      )}
+                      <div className="flex items-center gap-2">
+                        <span className="text-gray-500 text-xs">
+                          {item.isexternallink ? 'External Link' : 'Uploaded File'}
+                        </span>
+                        {item.isexternallink && (
+                          <span className="text-blue-400 text-xs">({item.type})</span>
+                        )}
+                      </div>
+                      
+                      <div className="flex justify-between items-center pt-2">
+                        <span className="text-gray-500 text-xs">
+                          {item.type.split('/')[0]}
+                        </span>
+                        <div className="flex space-x-2">
+                          <button
+                            onClick={() => setEditingItem(item)}
+                            className="text-blue-400 hover:text-blue-300 transition-colors duration-200 text-xs"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            onClick={() => handleDeleteMedia(item)}
+                            disabled={isDeleting === item.id}
+                            className="text-red-400 hover:text-red-300 transition-colors duration-200 disabled:opacity-50"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                
+                {filteredItems.length === 0 && (
+                  <div className="col-span-full text-center py-12">
+                    <p className="text-gray-400">No {activeTab}s uploaded yet</p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Upload/Edit Form */}
+            <div className="space-y-4">
+              <h3 className="text-white text-lg font-semibold">
+                {editingItem ? 'Edit' : 'Add New'} {activeTab === 'artwork' ? 'Artwork' : 'Video'}
+              </h3>
+              
+              <div className="space-y-4 max-h-full overflow-y-auto scrollbar-thin scrollbar-thumb-gray-600 scrollbar-track-transparent pr-2">
+                {/* Upload Progress */}
+                <UploadProgress uploadState={uploadState} />
+
+                {/* Upload Method Selection (only for new items) */}
+                {!editingItem && (
+                  <div className="flex space-x-2 mb-4">
+                    <button
+                      onClick={() => setUploadMethod('file')}
+                      className={`flex-1 py-2 px-4 rounded-lg text-sm font-medium transition-colors duration-200 flex items-center justify-center gap-2 ${
+                        uploadMethod === 'file' 
+                          ? 'bg-blue-600 text-white' 
+                          : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                      }`}
+                    >
+                      <Upload size={16} />
+                      Upload File
+                    </button>
+                    <button
+                      onClick={() => setUploadMethod('link')}
+                      className={`flex-1 py-2 px-4 rounded-lg text-sm font-medium transition-colors duration-200 flex items-center justify-center gap-2 ${
+                        uploadMethod === 'link' 
+                          ? 'bg-blue-600 text-white' 
+                          : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                      }`}
+                    >
+                      <Link size={16} />
+                      Add Link
+                    </button>
+                  </div>
+                )}
+
+                <input
+                  type="text"
+                  placeholder="Title *"
+                  value={editingItem ? editingItem.title || '' : newMedia.title}
+                  onChange={(e) => editingItem 
+                    ? setEditingItem({ ...editingItem, title: e.target.value })
+                    : setNewMedia({ ...newMedia, title: e.target.value })
+                  }
+                  className="w-full bg-gray-700 text-white placeholder-gray-400 px-4 py-3 rounded-lg border-none focus:outline-none focus:ring-2 focus:ring-blue-600"
+                />
+
+                {/* NEW: Type detail input for images */}
+                {activeTab === 'artwork' && (
+                  <input
+                    type="text"
+                    placeholder="Type (e.g., painting, sculpture, photography)"
+                    value={editingItem ? editingItem.type_detail || '' : newMedia.type_detail}
+                    onChange={(e) => editingItem 
+                      ? setEditingItem({ ...editingItem, type_detail: e.target.value })
+                      : setNewMedia({ ...newMedia, type_detail: e.target.value })
+                    }
+                    className="w-full bg-gray-700 text-white placeholder-gray-400 px-4 py-3 rounded-lg border-none focus:outline-none focus:ring-2 focus:ring-blue-600"
+                  />
+                )}
+
+                <textarea
+                  placeholder="Description"
+                  value={editingItem ? editingItem.description || '' : newMedia.description}
+                  onChange={(e) => editingItem 
+                    ? setEditingItem({ ...editingItem, description: e.target.value })
+                    : setNewMedia({ ...newMedia, description: e.target.value })
+                  }
+                  rows={3}
+                  className="w-full bg-gray-700 text-white placeholder-gray-400 px-4 py-3 rounded-lg border-none focus:outline-none focus:ring-2 focus:ring-blue-600 resize-none"
+                />
+
+                {/* File Upload Section */}
+                {!editingItem && uploadMethod === 'file' && (
+                  <div className="space-y-2">
+                    <button
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={uploadState.isUploading}
+                      className="w-full bg-gray-700 hover:bg-gray-600 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-semibold py-3 px-4 rounded-lg transition-colors duration-200 flex items-center justify-center gap-2"
+                    >
+                      <Upload size={18} />
+                      Select {activeTab === 'artwork' ? 'Image' : 'Video'} File *
+                    </button>
+                    
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept={activeTab === 'artwork' ? 'image/*' : '.mp4,.webm,.ogg'}
+                      onChange={handleFileSelect}
+                      className="hidden"
+                    />
+
+                    {newMedia.file && (
+                      <div className="text-sm text-gray-400 p-2 bg-gray-700 rounded">
+                        <div className="flex items-center justify-between">
+                          <span>Selected: {newMedia.file.name}</span>
+                          <span className="text-xs">
+                            {(newMedia.file.size / (1024 * 1024)).toFixed(2)} MB
+                          </span>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* NEW: Thumbnail upload for videos */}
+                    {activeTab === 'video' && (
+                      <div className="space-y-2">
+                        <button
+                          onClick={() => thumbnailInputRef.current?.click()}
+                          disabled={uploadState.isUploading}
+                          className="w-full bg-gray-600 hover:bg-gray-500 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-semibold py-2 px-4 rounded-lg transition-colors duration-200 flex items-center justify-center gap-2"
+                        >
+                          <FileImage size={16} />
+                          Select Thumbnail (Optional)
+                        </button>
+                        
+                        <input
+                          ref={thumbnailInputRef}
+                          type="file"
+                          accept="image/*"
+                          onChange={handleThumbnailSelect}
+                          className="hidden"
+                        />
+
+                        {newMedia.thumbnailFile && (
+                          <div className="text-sm text-gray-400 p-2 bg-gray-700 rounded">
+                            <div className="flex items-center justify-between">
+                              <span>Thumbnail: {newMedia.thumbnailFile.name}</span>
+                              <span className="text-xs">
+                                {(newMedia.thumbnailFile.size / (1024 * 1024)).toFixed(2)} MB
+                              </span>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Enhanced file type help text */}
+                    <div className="text-xs text-gray-500 p-3 bg-gray-750 rounded">
+                      <p className="font-medium mb-2">Supported formats:</p>
+                      <div className="space-y-1">
+                        <p><strong>Images:</strong> JPG, PNG, GIF, WebP, SVG (max 10MB)</p>
+                        <p><strong>Videos:</strong> MP4 (H.264), WebM (VP8/VP9), OGG (Theora) (max 100MB)</p>
+                        {activeTab === 'video' && (
+                          <p><strong>Thumbnails:</strong> JPG, PNG, GIF, WebP (max 5MB)</p>
+                        )}
+                      </div>
+                      <div className="mt-2 p-2 bg-yellow-900 bg-opacity-30 border border-yellow-600 rounded">
+                        <p className="text-yellow-300 text-xs">
+                          <strong>Important:</strong> For best compatibility, use MP4 files with H.264 codec. 
+                          Other formats may not play in all browsers.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* External Link Section */}
+                {!editingItem && uploadMethod === 'link' && (
+                  <div className="space-y-2">
+                    <input
+                      type="url"
+                      placeholder="External URL *"
+                      value={newMedia.externalUrl}
+                      onChange={(e) => setNewMedia({ ...newMedia, externalUrl: e.target.value })}
+                      className="w-full bg-gray-700 text-white placeholder-gray-400 px-4 py-3 rounded-lg border-none focus:outline-none focus:ring-2 focus:ring-blue-600"
+                    />
+
+                    <div className="flex space-x-2">
+                      <button
+                        onClick={() => setNewMedia({ ...newMedia, linkType: 'image' })}
+                        className={`flex-1 py-2 px-4 rounded-lg text-sm font-medium transition-colors duration-200 ${
+                          newMedia.linkType === 'image' 
+                            ? 'bg-blue-600 text-white' 
+                            : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                        }`}
+                      >
+                        Image Link
+                      </button>
+                      <button
+                        onClick={() => setNewMedia({ ...newMedia, linkType: 'video' })}
+                        className={`flex-1 py-2 px-4 rounded-lg text-sm font-medium transition-colors duration-200 ${
+                          newMedia.linkType === 'video' 
+                            ? 'bg-blue-600 text-white' 
+                            : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                        }`}
+                      >
+                        Video Link
+                      </button>
+                    </div>
+
+                    <div className="text-xs text-gray-500 p-2 bg-gray-750 rounded">
+                      <p className="font-medium mb-1">Supported links:</p>
+                      <p>Images: Direct image URLs, social media images</p>
+                      <p>Videos: YouTube, Vimeo, direct video URLs</p>
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex space-x-3">
+                  <button
+                    onClick={editingItem ? handleUpdateMedia : (uploadMethod === 'file' ? handleFileUpload : handleLinkSubmission)}
+                    disabled={
+                      uploadState.isUploading || 
+                      !newMedia.title.trim() || 
+                      (!editingItem && uploadMethod === 'file' && !newMedia.file) ||
+                      (!editingItem && uploadMethod === 'link' && !newMedia.externalUrl.trim())
+                    }
+                    className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-semibold py-3 px-4 rounded-lg transition-colors duration-200 flex items-center justify-center gap-2"
+                  >
+                    {uploadState.isUploading ? (
+                      <>
+                        <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                        {editingItem ? 'Updating...' : (uploadMethod === 'file' ? 'Uploading...' : 'Saving...')}
+                      </>
+                    ) : (
+                      <>
+                        <Save size={18} />
+                        {editingItem ? 'Update' : (uploadMethod === 'file' ? 'Upload' : 'Save Link')}
+                      </>
+                    )}
+                  </button>
+                  
+                  {editingItem && (
+                    <button
+                      onClick={() => {
+                        setEditingItem(null);
+                        resetUploadState();
+                      }}
+                      disabled={uploadState.isUploading}
+                      className="px-4 py-3 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-600 text-white rounded-lg transition-colors duration-200"
+                    >
+                      Cancel
+                    </button>
+                  )}
+                  
+                  {!editingItem && (newMedia.file || newMedia.externalUrl) && (
+                    <button
+                      onClick={resetForm}
+                      disabled={uploadState.isUploading}
+                      className="px-4 py-3 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-600 text-white rounded-lg transition-colors duration-200"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Confirmation Dialog */}
+      <ConfirmDialog
+        isOpen={confirmDialog.isOpen}
+        title={confirmDialog.title}
+        message={confirmDialog.message}
+        onConfirm={confirmDialog.onConfirm}
+        onCancel={() => setConfirmDialog({ ...confirmDialog, isOpen: false })}
+      />
+    </>
   );
 };
 

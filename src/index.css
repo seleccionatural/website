@@ -60,34 +60,6 @@
     display: none;  /* Safari and Chrome */
   }
 
-  /* CRITICAL: Ensure masonry items have consistent spacing */
-  .masonry-item {
-    break-inside: avoid;
-    page-break-inside: avoid;
-    margin-bottom: 1rem !important; /* CRITICAL: Force consistent vertical spacing for all items */
-  }
-
-  /* CRITICAL: Enhanced mobile responsiveness - prevent media disappearing */
-  @media (max-width: 768px) {
-    .mobile-media-container {
-      width: 100% !important;
-      min-width: 100px !important;
-      max-width: 100% !important;
-      height: auto !important;
-      display: block !important;
-      visibility: visible !important;
-    }
-    
-    .mobile-media-container img,
-    .mobile-media-container video {
-      width: 100% !important;
-      height: auto !important;
-      display: block !important;
-      visibility: visible !important;
-      min-height: 120px !important;
-    }
-  }
-
   /* Prevent horizontal scrolling */
   .overflow-x-hidden {
     overflow-x: hidden !important;
@@ -176,12 +148,7 @@
   .masonry-item {
     break-inside: avoid;
     page-break-inside: avoid;
-    margin-bottom: 1rem !important; /* CRITICAL: Consistent vertical spacing for all masonry items */
-  }
-
-  /* CRITICAL: Force vertical spacing on all image containers */
-  .columns-3 > *, .columns-2 > * {
-    margin-bottom: 1rem !important;
+    margin-bottom: 1rem; /* FIXED: Consistent vertical spacing for all masonry items */
   }
 
   /* FIXED: Enhanced scrollbar hiding for all browsers */

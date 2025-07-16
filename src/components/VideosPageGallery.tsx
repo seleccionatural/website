@@ -326,14 +326,36 @@ const VideosPageGallery: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* CRITICAL: Removed corner icon as requested - only keeping video type indicator */}
+                  {/* Video type indicator with enhanced styling */}
+                  <div className="absolute top-3 right-3 bg-black bg-opacity-80 rounded-full px-3 py-1 backdrop-blur-sm">
+                    <div className="flex items-center gap-1">
+                      {video.isexternallink ? (
+                        <ExternalLink className="w-3 h-3 text-blue-400" />
+                      ) : (
+                        <Video className="w-3 h-3 text-green-400" />
+                      )}
+                      <span className="text-white text-xs font-medium">
+                        {video.isexternallink ? 'External' : 'File'}
+                      </span>
+                    </div>
+                  </div>
                 </div>
                 
                 <div className="group-hover:translate-y-[-2px] transition-transform duration-300">
-                  {/* CRITICAL: Only display thumbnail and title as requested */}
-                  <h3 className="text-white text-base md:text-xl font-semibold">
+                  <h3 className="text-white text-base md:text-xl font-semibold mb-2">
                     {video.title || video.name}
                   </h3>
+                  {video.description && (
+                    <p className="text-gray-400 text-sm line-clamp-2 mb-2">
+                      {video.description}
+                    </p>
+                  )}
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-500 text-xs">
+                      {video.isexternallink ? 'External Video' : 'Uploaded Video'}
+                    </span>
+                    <span className="text-blue-400 text-xs">Click to play</span>
+                  </div>
                 </div>
               </div>
             ))}
@@ -361,13 +383,30 @@ const VideosPageGallery: React.FC = () => {
                       <Play className="w-7 h-7 text-black ml-1" fill="currentColor" />
                     </div>
                   </div>
+
+                  {/* Video type indicator for mobile */}
+                  <div className="absolute top-2 right-2 bg-black bg-opacity-80 rounded-full px-2 py-1">
+                    <span className="text-white text-xs">
+                      {video.isexternallink ? 'External' : 'File'}
+                    </span>
+                  </div>
                 </div>
                 
                 <div className="group-hover:translate-y-[-2px] transition-transform duration-300">
-                  {/* CRITICAL: Only display thumbnail and title as requested */}
-                  <h3 className="text-white text-base font-semibold">
+                  <h3 className="text-white text-base font-semibold mb-2">
                     {video.title || video.name}
                   </h3>
+                  {video.description && (
+                    <p className="text-gray-400 text-sm line-clamp-2 mb-2">
+                      {video.description}
+                    </p>
+                  )}
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-500 text-xs">
+                      {video.isexternallink ? 'External Video' : 'Uploaded Video'}
+                    </span>
+                    <span className="text-blue-400 text-xs">Tap to play</span>
+                  </div>
                 </div>
               </div>
             ))}
